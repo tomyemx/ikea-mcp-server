@@ -114,9 +114,11 @@ protocol, which is what actually proves the thing works.
 
 ## Known data caveats
 
-- The sale page listed SÖDERHAMN at **3,590** while the product page reported **2580.0**. Not a
-  VAT difference (2580 × 1.17 ≈ 3019). Most likely the sale page shows the pre-discount price.
-  Treat `check_product` as authoritative and verify before recommending.
+- **The sale page shows the pre-discount price.** Confirmed 2026-07-28 across 11 items: every
+  single one was cheaper on its product page — KALLAX 475→350, RÅSKOG 195→150, SKUBB 45→35,
+  BLÅLIDEN 495→395, SÖDERHAMN 3,590→2,580. Not a VAT artefact (2580 × 1.17 ≈ 3019).
+  **Always resolve prices with `check_product` before quoting them**; the `price` field from
+  `get_sale_items` is the "before" figure, and treating it as the offer overstates every item.
 - Only **24 items** are currently on the sale page, well under the `limit` of 50.
 - The January HELMER URL now redirects — `status: "Unavailable (Redirected)"`. Correct behaviour,
   stale data. Product URLs from the recovered 2026 sessions should all be re-checked.

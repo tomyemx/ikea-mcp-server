@@ -25,7 +25,11 @@ async def get_sale_items(category: str | None = None, limit: int = 50) -> str:
     """Fetch items currently on sale at IKEA Israel.
 
     Returns JSON: a list of items with name, description, price (ILS), image_url and
-    product_url. Prices are as shown on the sale page. Product names are in Hebrew.
+    product_url. Product names are in Hebrew.
+
+    IMPORTANT: `price` here is the PRE-DISCOUNT price shown on the sale listing, not the
+    offer price. Verified across 11 items — every one was cheaper on its product page.
+    Call `check_product` on anything before quoting a price to the user.
 
     Use this to answer questions about what is on offer, or to pick items that suit a
     room's style — analyse the returned list yourself rather than expecting the server
