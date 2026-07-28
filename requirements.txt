@@ -1,0 +1,13 @@
+# MCP server
+mcp>=1.25
+
+# Scraping IKEA Israel (needs `playwright install chromium` after pip install)
+playwright>=1.57
+
+# Design-session helpers: markdown -> PDF export (convert_to_pdf.py)
+markdown
+xhtml2pdf
+
+# Tests
+pytest
+requests

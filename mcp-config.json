@@ -1,0 +1,11 @@
+{
+  "_comment": "Working MCP config as of 2026-07-28. Use for Antigravity or Claude Desktop. Claude Code is already registered at user scope via `claude mcp add` — see docs/SERVER-STATUS.md. The interpreter must be the project venv, not a bare `python`: the deps (mcp, playwright) live only in .venv.",
+  "mcpServers": {
+    "ikea-designer": {
+      "command": "C:\\Users\\tomye\\Projects\\ikea-mcp-server\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\tomye\\Projects\\ikea-mcp-server\\server.py"
+      ]
+    }
+  }
+}

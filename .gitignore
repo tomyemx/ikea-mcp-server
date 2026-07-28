@@ -1,1 +1,21 @@
-.venv
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv.*/
+venv/
+
+# Generated debug dumps (HTML/PNG snapshots, scraped data)
+debug/
+debug_screenshot.png
+sale_page_dump.html
+
+# Recovered Antigravity session history — kept local only.
+# Contains photos of the apartment, a floor plan, and personal chat transcripts.
+# The remote (github.com/tomyemx/ikea-mcp-server) is PUBLIC — do not commit this.
+docs/antigravity-history/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
