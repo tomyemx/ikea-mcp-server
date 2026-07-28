@@ -18,11 +18,37 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 SALE_URL = "https://www.ikea.com/il/he/offers/limited-time-offers/"
 
-async def scrape_ikea_sale(category_filter: str = None):
+# The sale hub carries ~2,100 items. Category-scoped offer pages are far smaller and
+# usually what you actually want.
+CATEGORY_URLS = {
+    "sofas-armchairs": "https://www.ikea.com/il/he/offers/deals-on-sofas-armchairs-living-room-seating-offers-700640/",
+    "tables-chairs": "https://www.ikea.com/il/he/offers/deals-on-tables-chairs-offers-fu002/",
+    "desks-office-chairs": "https://www.ikea.com/il/he/offers/deals-on-office-desks-chairs-furniture-offers-fu004/",
+}
+
+# Product cards expose a stable test id; the class names around them churn.
+CARD_SELECTOR = '[data-testid="plp-product-card"], .plp-fragment-wrapper, .pub__product-card, .product-compact'
+
+# How many times a "show more" batch may fail to appear before we call it the end.
+MAX_STALLS = 3
+
+
+async def scrape_ikea_sale(category_filter: str = None, url: str = None, max_items: int = 200):
     """
-    Scrapes the IKEA Israel sale page for products.
-    Returns a list of dictionaries with product details.
+    Scrapes an IKEA Israel offers page for products.
+
+    Args:
+        category_filter: optional free-text filter on name/description.
+        url: offers page to scrape; defaults to the full sale hub. Accepts a key from
+             CATEGORY_URLS as a shorthand.
+        max_items: stop paginating once this many cards are loaded. The hub has ~2,100
+                   items and each "show more" click costs a round trip, so this matters.
+
+    Returns a list of dicts: name, description, price, price_before, discount,
+    image_url, product_url. `price` is what you pay; `price_before` is the struck-out
+    original, present only on discounted items.
     """
+    url = CATEGORY_URLS.get(url, url) or SALE_URL
     async with async_playwright() as p:
         # Launch with arguments to try and avoid detection
         browser = await p.chromium.launch(
@@ -46,57 +72,110 @@ async def scrape_ikea_sale(category_filter: str = None):
         
         page = await context.new_page()
         
-        _log(f"Navigating to {SALE_URL}...")
+        _log(f"Navigating to {url}...")
         try:
-            await page.goto(SALE_URL, timeout=60000, wait_until='domcontentloaded')
+            await page.goto(url, timeout=60000, wait_until='domcontentloaded')
         except Exception as e:
             _log(f"Navigation error: {e}")
 
-        # Scroll to bottom to trigger lazy loading
-        _log("Scrolling to load products...")
-        for i in range(10):
-            await page.mouse.wheel(0, 1000)
-            await page.wait_for_timeout(1000)
-            
-        # Explicitly wait for product cards
         try:
-            await page.wait_for_selector('.plp-fragment-wrapper, .pub__product-card, .product-compact', timeout=10000)
-            _log("Product cards detected!")
-        except:
+            await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+        except Exception:
             _log("Timeout waiting for product cards.")
 
-        # Try to find product elements using standard IKEA global site selectors
-        products = await page.evaluate('''() => {
-            const items = [];
-            
-            // Standard IKEA product card selectors (global site)
-            // .pub__product-card, .plp-fragment-wrapper, .pip-product-compact
-            
-            const cards = document.querySelectorAll('.plp-fragment-wrapper, .pub__product-card, .product-compact, [data-testid="plp-product-card"]');
-            
-            if (cards.length > 0) {
-                 return Array.from(cards).map(el => {
-                    // Extract info
-                    const nameEl = el.querySelector('.notranslate, .pip-header-section__title--small, .pub__title, h3');
-                    const descEl = el.querySelector('.pip-header-section__description-text, .pub__description');
-                    const priceEl = el.querySelector('.pip-price__integer, .pub__price__value, .pip-temp-price__integer, .plp-price__integer'); 
-                    const imgEl = el.querySelector('img');
-                    const linkEl = el.querySelector('a');
-                    
-                    if (!nameEl) return null;
-                    
-                    return {
-                        name: nameEl.innerText.trim(),
-                        description: descEl ? descEl.innerText.trim() : "",
-                        price: priceEl ? priceEl.innerText.trim() : "N/A",
-                        image_url: imgEl ? imgEl.src : "",
-                        product_url: linkEl ? linkEl.href : ""
-                    };
-                 }).filter(p => p !== null && p.price !== "N/A");
-            }
-            
-            return [];
-        }''')
+        # IKEA paginates: 24 cards per page behind a "הצג עוד" control. Without clicking
+        # it we only ever saw the first page — which silently capped every result at 24.
+        total_text = await page.evaluate(
+            r"""() => { const m = document.body.innerText.match(/([\d,]+)\s*פריטים/); return m ? m[1] : null; }"""
+        )
+        if total_text:
+            _log(f"Page reports {total_text} items available.")
+
+        count = await page.evaluate(f"document.querySelectorAll('{CARD_SELECTOR}').length")
+        stalls = 0
+        while count < max_items:
+            # Match on the control's text, not its CSS classes, which churn between
+            # releases. Re-locate every pass — the control is re-rendered on each load.
+            more = page.locator("a,button").filter(has_text="הצג עוד").first
+            try:
+                if not await more.count() or not await more.is_visible():
+                    break  # button really is gone: end of list
+                await more.scroll_into_view_if_needed(timeout=5000)
+                await more.click(timeout=5000)
+            except Exception as e:
+                _log(f"Pagination stopped: {e}")
+                break
+
+            try:
+                await page.wait_for_function(
+                    f"document.querySelectorAll('{CARD_SELECTOR}').length > {count}", timeout=15000
+                )
+            except Exception:
+                # A slow batch looks exactly like the end of the list. Only the button
+                # disappearing proves we are done, so retry before believing it —
+                # without this the scrape silently truncated at 48 of 126 items.
+                stalls += 1
+                if stalls >= MAX_STALLS:
+                    _log(f"No new cards after {stalls} attempts; assuming end of list.")
+                    break
+                _log(f"Batch stalled ({stalls}/{MAX_STALLS}); retrying...")
+                continue
+
+            new_count = await page.evaluate(f"document.querySelectorAll('{CARD_SELECTOR}').length")
+            if new_count <= count:  # belt-and-braces against an infinite loop
+                break
+            count = new_count
+            stalls = 0
+            _log(f"Loaded {count} cards...")
+
+        _log(f"Collecting {count} product cards.")
+
+        products = await page.evaluate('''(cardSelector) => {
+            const text = el => el ? el.innerText.trim() : null;
+
+            return Array.from(document.querySelectorAll(cardSelector)).map(el => {
+                const nameEl = el.querySelector('.plp-price-module__name-decorator, .notranslate, .pip-header-section__title--small, .pub__title, h3');
+                const descEl = el.querySelector('.plp-price-module__description, .pip-header-section__description-text, .pub__description');
+                const imgEl  = el.querySelector('img');
+                const linkEl = el.querySelector('a[href*="/p/"]') || el.querySelector('a');
+
+                // A discounted card renders TWO .plp-price__integer nodes: the struck-out
+                // original first, then the price you actually pay. Selecting the first one
+                // is the bug that made every quoted price too high.
+                const current = el.querySelector('.plp-price-module__primary-currency-price-energy-class .plp-price__integer');
+                const before  = el.querySelector('.plp-price-module__comparison-price .plp-price__integer');
+                const all = Array.from(el.querySelectorAll('.plp-price__integer, .pip-price__integer, .pip-temp-price__integer'));
+
+                // Fall back on DOM order: the payable price is always last.
+                const price = text(current) || (all.length ? text(all[all.length - 1]) : null);
+                const priceBefore = text(before) || (all.length > 1 ? text(all[0]) : null);
+
+                if (!nameEl || !price) return null;
+
+                return {
+                    name: nameEl.innerText.trim(),
+                    description: descEl ? descEl.innerText.trim() : "",
+                    price: price,
+                    price_before: priceBefore === price ? null : priceBefore,
+                    discount: text(el.querySelector('.plp-price-module__offer-message')),
+                    image_url: imgEl ? imgEl.src : "",
+                    product_url: linkEl ? linkEl.href : ""
+                };
+            }).filter(p => p !== null);
+        }''', CARD_SELECTOR)
+
+        # The same product can render more than one card (variant boxes); dedupe on URL.
+        seen = set()
+        deduped = []
+        for p in products:
+            key = p.get("product_url") or (p["name"], p["price"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+        if len(deduped) != len(products):
+            _log(f"Deduped {len(products)} cards -> {len(deduped)} products.")
+        products = deduped
         
         if not products:
             _log("No products found on sale page. Dumping content and screenshot...")
@@ -177,13 +256,11 @@ async def get_product_details(url):
         return result
 
 if __name__ == "__main__":
-    # Test run
-    # data = asyncio.run(scrape_ikea_deals())
-    # print(f"Found {len(data)} deals")
-    
-    # Test details
-    res = asyncio.run(get_product_details("https://www.ikea.com/il/he/p/helmer-drawer-unit-on-castors-white-10251045/"))
-    print(res)
-    results = asyncio.run(scrape_ikea_sale(None))
-    print(f"Found {len(results)} products.")
+    # Usage: python ikea_scraper.py [category-key-or-url] [max_items]
+    target = sys.argv[1] if len(sys.argv) > 1 else None
+    cap = int(sys.argv[2]) if len(sys.argv) > 2 else 200
+
+    results = asyncio.run(scrape_ikea_sale(None, url=target, max_items=cap))
+    discounted = [p for p in results if p.get("price_before")]
+    print(f"Found {len(results)} products ({len(discounted)} discounted).")
     print(json.dumps(results[:3], indent=2, ensure_ascii=False))

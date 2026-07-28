@@ -32,22 +32,42 @@ async def main():
             assert "get_sale_items" in names, "get_sale_items missing"
             assert "check_product" in names, "check_product missing"
 
-            print("\ncalling get_sale_items(limit=3)...")
-            result = await session.call_tool("get_sale_items", {"limit": 3})
+            print("\ncalling get_sale_items(category_url='sofas-armchairs')...")
+            result = await session.call_tool(
+                "get_sale_items", {"category_url": "sofas-armchairs", "limit": 100}
+            )
             payload = json.loads(result.content[0].text)
-            print(f"  count={payload['count']} total_available={payload.get('total_available')}")
+            total = payload.get("total_available")
+            print(f"  count={payload['count']} total_available={total}")
             assert payload["count"] > 0, "no sale items returned"
+
+            # 24 is IKEA's page size. Anything at or below it means the "הצג עוד"
+            # pagination silently stopped and we are back to scraping one page.
+            assert total > 24, f"only {total} items — pagination regressed"
 
             first = payload["items"][0]
             for field in ("name", "price", "image_url", "product_url"):
                 assert first.get(field), f"item missing {field}"
             print(f"  first item: {first['name'].splitlines()[0]} @ {first['price']} ILS")
 
-            print("\ncalling check_product() on that item...")
-            result = await session.call_tool("check_product", {"url": first["product_url"]})
+            # A discounted card renders both the struck-out original and the payable
+            # price. Picking the wrong node is the bug this assertion exists to catch:
+            # the listing price must agree with the product page.
+            discounted = next((i for i in payload["items"] if i.get("price_before")), first)
+            print(f"\ncalling check_product() on {discounted['name'].splitlines()[0]}...")
+            result = await session.call_tool("check_product", {"url": discounted["product_url"]})
             details = json.loads(result.content[0].text)
             print(f"  status={details['status']} price={details.get('price')}")
             assert details["status"] != "Unknown", "product check returned Unknown"
+
+            listed = float(discounted["price"].replace(",", ""))
+            live = details.get("price")
+            assert live is not None, "check_product returned no price"
+            assert abs(listed - live) < 0.01, (
+                f"listing says {listed} but product page says {live} — "
+                "get_sale_items is reading the wrong price node"
+            )
+            print(f"  listing {listed} == product page {live}")
 
     print("\nAll checks passed.")
 

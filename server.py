@@ -15,34 +15,42 @@ from ikea_scraper import get_product_details, scrape_ikea_sale
 
 mcp = FastMCP("IkeaLivingRoomDesigner")
 
-# Scraping the sale page takes ~20s, and a single conversation usually asks about it
-# repeatedly. Cache per category for the life of the process.
-_sale_cache: dict[str | None, list[dict[str, Any]]] = {}
+# Scraping takes ~20s and grows with pagination; a conversation usually asks repeatedly.
+# The key must include the source page, or one category's results mask another's.
+_sale_cache: dict[tuple[str | None, str | None, int], list[dict[str, Any]]] = {}
 
 
 @mcp.tool()
-async def get_sale_items(category: str | None = None, limit: int = 50) -> str:
+async def get_sale_items(
+    category: str | None = None,
+    limit: int = 50,
+    category_url: str | None = None,
+    max_items: int = 200,
+) -> str:
     """Fetch items currently on sale at IKEA Israel.
 
-    Returns JSON: a list of items with name, description, price (ILS), image_url and
-    product_url. Product names are in Hebrew.
+    Returns JSON per item: name, description, `price` (what you pay, ILS),
+    `price_before` (struck-out original, null if not discounted), `discount`
+    (e.g. "24% הנחה"), image_url and product_url. Product names are in Hebrew.
 
-    IMPORTANT: `price` here is the PRE-DISCOUNT price shown on the sale listing, not the
-    offer price. Verified across 11 items — every one was cheaper on its product page.
-    Call `check_product` on anything before quoting a price to the user.
-
-    Use this to answer questions about what is on offer, or to pick items that suit a
-    room's style — analyse the returned list yourself rather than expecting the server
-    to rank it.
+    The full sale hub carries ~2,100 items. Prefer a category page when you know what
+    you are looking for — pass `category_url` as one of:
+        sofas-armchairs, tables-chairs, desks-office-chairs
+    or a full IKEA offers URL.
 
     Args:
         category: Optional free-text filter matched against item name and description.
         limit: Maximum number of items to return (default 50).
+        category_url: Category shorthand or full offers URL. Defaults to the sale hub.
+        max_items: How many cards to paginate through before stopping (default 200).
     """
-    if category not in _sale_cache:
-        _sale_cache[category] = await scrape_ikea_sale(category)
+    key = (category, category_url, max_items)
+    if key not in _sale_cache:
+        _sale_cache[key] = await scrape_ikea_sale(
+            category, url=category_url, max_items=max_items
+        )
 
-    products = _sale_cache[category]
+    products = _sale_cache[key]
     if not products:
         return json.dumps(
             {

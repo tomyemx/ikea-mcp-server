@@ -5,9 +5,10 @@ stdio protocol against the live IKEA Israel site.
 
 ```
 tools advertised: ['get_sale_items', 'check_product']
-get_sale_items(limit=3)  -> count=3  total_available=24
-  first item: SÖDERHAMN @ 3,590 ILS
-check_product(<that url>) -> status=Available  price=2580.0
+get_sale_items(category_url='sofas-armchairs', limit=100) -> count=100  total_available=126
+  first item: BÅRSLÖV @ 2,795 ILS
+check_product(<that url>) -> status=Available  price=2795.0
+  listing 2795.0 == product page 2795.0
 All checks passed.
 ```
 
@@ -19,7 +20,7 @@ Two data tools, no LLM work of its own, no API key:
 
 | Tool | Purpose |
 |---|---|
-| `get_sale_items(category=None, limit=50)` | Scrape the IKEA Israel sale page; returns JSON with name, description, price, image_url, product_url. Optional free-text category filter. Results cached per category for the process lifetime (a scrape takes ~20s). |
+| `get_sale_items(category=None, limit=50, category_url=None, max_items=200)` | Scrape an IKEA Israel offers page, paginating through "הצג עוד" until `max_items`. Returns JSON with name, description, `price` (payable), `price_before` (struck-out original), `discount`, image_url, product_url. Optional free-text category filter. Cached per `(category, category_url, max_items)` for the process lifetime — a paginated scrape takes ~40s. |
 | `check_product(url)` | Live price and availability for one product URL. A redirect to a category page means the item is gone. |
 
 The client's own model does the styling, matching and recommending from the returned data.
@@ -112,16 +113,45 @@ Now written next to `ikea_scraper.py`.
 could not have passed. It now launches the server as a real MCP subprocess and drives it over the
 protocol, which is what actually proves the thing works.
 
+## Two scraper bugs, found 2026-07-28
+
+Both were mine, and both were reported here as facts about IKEA before being diagnosed.
+The user pushed back on a claim that no armchairs were on sale, which is what exposed them.
+
+**We read the wrong price node.** A discounted card renders *two* `.plp-price__integer`
+elements: the struck-out original first, then the price you actually pay. `querySelector`
+returns the first, so every quoted price was the pre-discount figure.
+
+This document previously recorded that gap — KALLAX 475→350, RÅSKOG 195→150, SÖDERHAMN
+3,590→2,580 — as "the sale page shows the pre-discount price", i.e. as IKEA's behaviour.
+That was wrong. The listing does show the offer price; we were not reading it. The
+conclusion that the earlier recommendation list was inflated still holds; the cause does not.
+
+Fixed by selecting `.plp-price-module__primary-currency-price-energy-class .plp-price__integer`
+for `price` and `.plp-price-module__comparison-price .plp-price__integer` for `price_before`,
+falling back on DOM order (payable price is last). `tests/test_server_flow.py` now asserts the
+listing price equals the `check_product` price, which is the assertion that catches a relapse.
+
+**We only ever scraped the first page.** IKEA paginates at 24 cards behind a "הצג עוד"
+control that the old blind-scroll loop never clicked. The hub reports ~2,107 items and we
+were collecting 24 of them — 1.1%. The January run's 48 rows (≈24 unique) hit the same
+ceiling. Anything concluded from "what's on sale" before this date rests on that sample.
+
+Fixed with a click-until-exhausted loop bounded by `max_items`. A stalled batch is retried
+up to `MAX_STALLS` times before being treated as the end of the list — without the retry the
+scrape silently truncated at 48 of 126 on roughly half of runs.
+
+Verified: category `700640` now returns 126/126 items on consecutive runs, and 19 armchairs
+under ₪1,000 that the old code could not see.
+
 ## Known data caveats
 
-- **The sale page shows the pre-discount price.** Confirmed 2026-07-28 across 11 items: every
-  single one was cheaper on its product page — KALLAX 475→350, RÅSKOG 195→150, SKUBB 45→35,
-  BLÅLIDEN 495→395, SÖDERHAMN 3,590→2,580. Not a VAT artefact (2580 × 1.17 ≈ 3019).
-  **Always resolve prices with `check_product` before quoting them**; the `price` field from
-  `get_sale_items` is the "before" figure, and treating it as the offer overstates every item.
-- Only **24 items** are currently on the sale page, well under the `limit` of 50.
-- The January HELMER URL now redirects — `status: "Unavailable (Redirected)"`. Correct behaviour,
-  stale data. Product URLs from the recovered 2026 sessions should all be re-checked.
+- Prefer a category page over the sale hub. `category_url` accepts `sofas-armchairs`,
+  `tables-chairs`, `desks-office-chairs`, or any full IKEA offers URL.
+- Sale listings go stale fast. Of six items chosen in February, three now redirect
+  (`status: "Unavailable (Redirected)"`) — LISTERBY, VEDBO and SANDTRAV all lost the exact
+  variant, though each range still has live siblings. Re-check every URL before quoting it.
+- The January HELMER URL redirects for the same reason.
 - Product names come back in Hebrew, with the English range name on the first line.
 
 ## Untouched
