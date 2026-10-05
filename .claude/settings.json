@@ -13,6 +13,7 @@
     ]
   },
   "enabledMcpjsonServers": [
-    "linear"
+    "linear",
+    "trove"
   ]
 }

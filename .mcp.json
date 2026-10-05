@@ -6,6 +6,13 @@
       "headers": {
         "Authorization": "Bearer ${LINEAR_API_KEY:-}"
       }
+    },
+    "trove": {
+      "type": "http",
+      "url": "https://heytrove.ai/api/v1/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TROVE_API_KEY:-}"
+      }
     }
   }
 }
